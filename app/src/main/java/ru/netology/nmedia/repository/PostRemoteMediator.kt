@@ -28,18 +28,19 @@ class PostRemoteMediator(
         state: PagingState<Int, PostEntity>
     ): MediatorResult {
         return try {
-            // Получаем ID последнего (самого нового) поста из локальной БД
-            val lastPostIdInDb = postDao.getMaxId()
+            // --- ИСПРАВЛЕНИЕ 1 (Оптимизация) ---
+            // Получаем ID для запроса новых данных из таблицы ключей, а не из таблицы постов.
+            val remoteKeyAfter = postRemoteKeyDao.max(PostRemoteKeyEntity.KeyType.AFTER)
 
             // Определяем, какой запрос делать на сервер
             val response = when (loadType) {
                 LoadType.REFRESH -> {
-                    // Если БД пустая, грузим последние посты
-                    if (lastPostIdInDb == null) {
+                    // Если ключа AFTER нет (null), значит БД пустая
+                    if (remoteKeyAfter == null) {
                         service.getLatest(state.config.initialLoadSize)
                     } else {
                         // Иначе запрашиваем посты, которые НОВЕЕ тех, что есть в БД
-                        service.getAfter(lastPostIdInDb, state.config.pageSize)
+                        service.getAfter(remoteKeyAfter, state.config.pageSize)
                     }
                 }
 
@@ -69,23 +70,33 @@ class PostRemoteMediator(
             db.withTransaction {
                 when (loadType) {
                     LoadType.REFRESH -> {
-                        // Обновляем ключ для REFRESH, НЕ удаляя другие данные
-                        // Это позволяет добавлять новые посты сверху без потери старых
+                        // Обновляем ключ для REFRESH (AFTER)
                         postRemoteKeyDao.insertOrUpdate(
                             PostRemoteKeyEntity(
                                 type = PostRemoteKeyEntity.KeyType.AFTER,
                                 id = body.first().id,
                             )
                         )
-                        // Ключи для APPEND (BEFORE) не трогаем, чтобы сохранить возможность листать вниз
+
+                        // --- ИСПРАВЛЕНИЕ 2 (Инициализация APPEND) ---
+                        // Если это первая загрузка (когда мы не нашли ключ AFTER),
+                        // инициализируем ключ BEFORE, чтобы можно было листать вниз.
+                        if (remoteKeyAfter == null) {
+                            postRemoteKeyDao.insertOrUpdate(
+                                PostRemoteKeyEntity(
+                                    type = PostRemoteKeyEntity.KeyType.BEFORE,
+                                    id = body.last().id,
+                                )
+                            )
+                        }
                     }
 
                     LoadType.PREPEND -> {
-                        // Этот блок не выполнится, так как мы вернулись выше
+                        // Этот блок не выполнится
                     }
 
                     LoadType.APPEND -> {
-                        // Сохраняем новый ключ для следующей догрузки вниз
+                        // Сохраняем новый ключ для следующей догрузки вниз (BEFORE)
                         postRemoteKeyDao.insertOrUpdate(
                             PostRemoteKeyEntity(
                                 type = PostRemoteKeyEntity.KeyType.BEFORE,
@@ -94,6 +105,7 @@ class PostRemoteMediator(
                         )
                     }
                 }
+                // Сохраняем полученные посты в основную таблицу
                 postDao.insert(body.toEntity())
             }
 
