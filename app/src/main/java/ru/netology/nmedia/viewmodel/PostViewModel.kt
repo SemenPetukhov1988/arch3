@@ -3,6 +3,8 @@ package ru.netology.nmedia.viewmodel
 import android.net.Uri
 import androidx.core.net.toFile
 import androidx.lifecycle.*
+import androidx.paging.CombinedLoadStates
+import androidx.paging.LoadState
 import androidx.paging.PagingData
 import androidx.paging.cachedIn
 import androidx.paging.map
@@ -15,6 +17,7 @@ import ru.netology.nmedia.dto.MediaUpload
 import ru.netology.nmedia.dto.Post
 import ru.netology.nmedia.model.FeedModelState
 import ru.netology.nmedia.model.PhotoModel
+import ru.netology.nmedia.repository.PagingModelState
 import ru.netology.nmedia.repository.PostRepository
 import ru.netology.nmedia.util.SingleLiveEvent
 import javax.inject.Inject
@@ -38,19 +41,26 @@ class PostViewModel @Inject constructor(
     private val repository: PostRepository,
     auth: AppAuth,
 ) : ViewModel() {
-    private val cached = repository
-        .data
-        .cachedIn(viewModelScope)
 
+    // --- Блок для управления SwipeRefreshLayout и индикаторами загрузки ---
+    // 1. Получаем PagingData в виде StateFlow, чтобы иметь доступ к методам PagingData.
+
+
+    // ------------------------------------------------------------------
+
+    // Основной поток данных для адаптера RecyclerView.
+    // Здесь мы добавляем признак ownedByMe к каждому посту.
     val data: Flow<PagingData<Post>> = auth.authStateFlow
         .flatMapLatest { (myId, _) ->
-            cached.map { pagingData ->
+            repository.data.map { pagingData ->
                 pagingData.map { post ->
                     post.copy(ownedByMe = post.authorId == myId)
                 }
             }
         }
+        .cachedIn(viewModelScope)
 
+    // Состояние для других операций (например, сохранения поста)
     private val _dataState = MutableLiveData<FeedModelState>()
     val dataState: LiveData<FeedModelState>
         get() = _dataState
@@ -71,34 +81,28 @@ class PostViewModel @Inject constructor(
     fun loadPosts() = viewModelScope.launch {
         try {
             _dataState.value = FeedModelState(loading = true)
-            // repository.stream.cachedIn(viewModelScope).
+            // Запуск первой загрузки данных происходит автоматически через repository.data,
+            // который мы уже подключили в pagingDataFlow.
             _dataState.value = FeedModelState()
         } catch (e: Exception) {
             _dataState.value = FeedModelState(error = true)
         }
     }
 
-    fun refreshPosts() = viewModelScope.launch {
-        try {
-            _dataState.value = FeedModelState(refreshing = true)
-//            repository.getAll()
-            _dataState.value = FeedModelState()
-        } catch (e: Exception) {
-            _dataState.value = FeedModelState(error = true)
-        }
-    }
+    // Правильный способ обновить ленту (для SwipeRefreshLayout)
+
 
     fun save() {
         edited.value?.let {
             viewModelScope.launch {
                 try {
                     repository.save(
-                        it, _photo.value?.uri?.let { MediaUpload(it.toFile()) }
+                        it, _photo.value?.uri?.let { uri -> MediaUpload(uri.toFile()) }
                     )
-
                     _postCreated.value = Unit
                 } catch (e: Exception) {
                     e.printStackTrace()
+                    // Здесь можно добавить обработку ошибки сохранения
                 }
             }
         }

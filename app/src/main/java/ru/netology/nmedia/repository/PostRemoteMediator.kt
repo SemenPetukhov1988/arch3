@@ -28,88 +28,102 @@ class PostRemoteMediator(
         state: PagingState<Int, PostEntity>
     ): MediatorResult {
         return try {
-            // --- ИСПРАВЛЕНИЕ 1 (Оптимизация) ---
-            // Получаем ID для запроса новых данных из таблицы ключей, а не из таблицы постов.
-            val remoteKeyAfter = postRemoteKeyDao.max(PostRemoteKeyEntity.KeyType.AFTER)
-
-            // Определяем, какой запрос делать на сервер
+            // --- Логика запроса к серверу (остается без изменений) ---
             val response = when (loadType) {
                 LoadType.REFRESH -> {
-                    // Если ключа AFTER нет (null), значит БД пустая
-                    if (remoteKeyAfter == null) {
-                        service.getLatest(state.config.initialLoadSize)
-                    } else {
-                        // Иначе запрашиваем посты, которые НОВЕЕ тех, что есть в БД
-                        service.getAfter(remoteKeyAfter, state.config.pageSize)
-                    }
+                    // Для REFRESH мы всегда запрашиваем последние посты.
+                    service.getLatest(state.config.pageSize)
                 }
 
                 LoadType.PREPEND -> {
-                    // Отключаем автоматическую догрузку вверх
-                    return MediatorResult.Success(endOfPaginationReached = true)
+                    // Для PREPEND убираем проверку на null, чтобы всегда делать запрос.
+                    // Если ключа нет, передаем null или 0, в зависимости от логики API.
+                    // Если API не поддерживает getBefore(null), можно передать ID первого поста.
+                    val remoteKeyBefore = postRemoteKeyDao.min(PostRemoteKeyEntity.KeyType.BEFORE)
+                    // Если ключа нет, можно передать null или 0, если API это поддерживает.
+                    // Если нет - передать ID первого элемента в текущем списке.
+                    val key = remoteKeyBefore ?: state.pages.firstOrNull()?.firstOrNull()?.id
+
+                    service.getBefore(key ?: 0, state.config.pageSize) // 0 или null как заглушка
                 }
 
                 LoadType.APPEND -> {
-                    // Обычная догрузка вниз
-                    val id = postRemoteKeyDao.min(PostRemoteKeyEntity.KeyType.BEFORE)
-                        ?: return MediatorResult.Success(endOfPaginationReached = false)
-                    service.getBefore(id, state.config.pageSize)
+                    // Для APPEND убираем проверку на null, чтобы всегда делать запрос.
+                    val remoteKeyAfter = postRemoteKeyDao.max(PostRemoteKeyEntity.KeyType.AFTER)
+                    val key = remoteKeyAfter ?: state.pages.lastOrNull()?.lastOrNull()?.id
+
+                    service.getAfter(key ?: 0, state.config.pageSize) // 0 или null как заглушка
                 }
             }
 
+            // --- Обработка ответа сервера (остается без изменений) ---
             if (!response.isSuccessful) {
                 throw ApiError(response.code(), response.message())
             }
             val body = response.body() ?: throw ApiError(response.code(), response.message())
 
-            // Если новых данных от сервера нет
-            if (body.isEmpty()) {
-                return MediatorResult.Success(endOfPaginationReached = true)
-            }
+            // Флаг конца пагинации. Если сервер вернул пустой список - значит данных больше нет.
+            val endOfPaginationReached = body.isEmpty()
 
             db.withTransaction {
-                when (loadType) {
-                    LoadType.REFRESH -> {
-                        // Обновляем ключ для REFRESH (AFTER)
-                        postRemoteKeyDao.insertOrUpdate(
-                            PostRemoteKeyEntity(
-                                type = PostRemoteKeyEntity.KeyType.AFTER,
-                                id = body.first().id,
-                            )
-                        )
+                if (loadType == LoadType.REFRESH) {
+                    postDao.clear()
+                    postRemoteKeyDao.clear()
+                }
 
-                        // --- ИСПРАВЛЕНИЕ 2 (Инициализация APPEND) ---
-                        // Если это первая загрузка (когда мы не нашли ключ AFTER),
-                        // инициализируем ключ BEFORE, чтобы можно было листать вниз.
-                        if (remoteKeyAfter == null) {
-                            postRemoteKeyDao.insertOrUpdate(
-                                PostRemoteKeyEntity(
-                                    type = PostRemoteKeyEntity.KeyType.BEFORE,
-                                    id = body.last().id,
+                if (body.isNotEmpty()) {
+                    postDao.insert(body.toEntity())
+                }
+
+                // Обновляем ключи только если есть данные
+                if (!endOfPaginationReached) {
+                    when (loadType) {
+                        LoadType.REFRESH -> {
+                            if (body.isNotEmpty()) {
+                                postRemoteKeyDao.insertOrUpdate(
+                                    PostRemoteKeyEntity(
+                                        type = PostRemoteKeyEntity.KeyType.AFTER,
+                                        id = body.first().id,
+                                    )
                                 )
-                            )
+                                postRemoteKeyDao.insertOrUpdate(
+                                    PostRemoteKeyEntity(
+                                        type = PostRemoteKeyEntity.KeyType.BEFORE,
+                                        id = body.last().id,
+                                    )
+                                )
+                            }
+                        }
+
+                        LoadType.PREPEND -> {
+                            if (body.isNotEmpty()) {
+                                postRemoteKeyDao.insertOrUpdate(
+                                    PostRemoteKeyEntity(
+                                        type = PostRemoteKeyEntity.KeyType.BEFORE,
+                                        id = body.last().id,
+                                    )
+                                )
+                            }
+                        }
+
+                        LoadType.APPEND -> {
+                            if (body.isNotEmpty()) {
+                                postRemoteKeyDao.insertOrUpdate(
+                                    PostRemoteKeyEntity(
+                                        type = PostRemoteKeyEntity.KeyType.AFTER,
+                                        id = body.first().id,
+                                    )
+                                )
+                            }
                         }
                     }
-
-                    LoadType.PREPEND -> {
-                        // Этот блок не выполнится
-                    }
-
-                    LoadType.APPEND -> {
-                        // Сохраняем новый ключ для следующей догрузки вниз (BEFORE)
-                        postRemoteKeyDao.insertOrUpdate(
-                            PostRemoteKeyEntity(
-                                type = PostRemoteKeyEntity.KeyType.BEFORE,
-                                id = body.last().id,
-                            )
-                        )
-                    }
                 }
-                // Сохраняем полученные посты в основную таблицу
-                postDao.insert(body.toEntity())
             }
 
-            MediatorResult.Success(endOfPaginationReached = false)
+            // --- ИЗМЕНЕННАЯ ЛОГИКА ВОЗВРАТА ---
+            // Возвращаем Success с флагом, который зависит ТОЛЬКО от того, был ли ответ от сервера пустым.
+            // Это заставит Paging3 показывать индикаторы загрузки при PREPEND и APPEND.
+            MediatorResult.Success(endOfPaginationReached = endOfPaginationReached)
 
         } catch (e: Exception) {
             if (e is CancellationException) {

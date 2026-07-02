@@ -26,4 +26,7 @@ interface PostRemoteKeyDao {
 
     @Query("DELETE FROM PostRemoteKeyEntity")
     suspend fun removeAll()
+
+    @Query("DELETE FROM PostRemoteKeyEntity")
+    suspend fun clear()
 }
