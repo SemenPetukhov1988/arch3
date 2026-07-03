@@ -59,7 +59,8 @@ class FeedFragment : Fragment() {
             }
         })
 
-        val loadStateAdapter = object : LoadStateAdapter<PostsLoadStateViewHolder>() {
+        // Создаём ДВА независимых экземпляра адаптера состояний загрузки
+        val loadStateHeaderAdapter = object : LoadStateAdapter<PostsLoadStateViewHolder>() {
             override fun onBindViewHolder(holder: PostsLoadStateViewHolder, loadState: LoadState) {
                 holder.bind(loadState)
             }
@@ -69,12 +70,23 @@ class FeedFragment : Fragment() {
             }
         }
 
-        val adapterWithFooter = postsAdapter.withLoadStateHeaderAndFooter(
-            header = loadStateAdapter,
-            footer = loadStateAdapter
+        val loadStateFooterAdapter = object : LoadStateAdapter<PostsLoadStateViewHolder>() {
+            override fun onBindViewHolder(holder: PostsLoadStateViewHolder, loadState: LoadState) {
+                holder.bind(loadState)
+            }
+
+            override fun onCreateViewHolder(parent: ViewGroup, loadState: LoadState): PostsLoadStateViewHolder {
+                return PostsLoadStateViewHolder(parent)
+            }
+        }
+
+        // Теперь передаём РАЗНЫЕ экземпляры для header и footer
+        val adapterWithLoadStates = postsAdapter.withLoadStateHeaderAndFooter(
+            header = loadStateHeaderAdapter,
+            footer = loadStateFooterAdapter
         )
 
-        binding.list.adapter = adapterWithFooter
+        binding.list.adapter = adapterWithLoadStates
 
         viewLifecycleOwner.lifecycleScope.launch {
             viewLifecycleOwner.repeatOnLifecycle(Lifecycle.State.STARTED) {
