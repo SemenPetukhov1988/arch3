@@ -30,22 +30,30 @@ class PostRemoteMediator(
     ): MediatorResult {
         return try {
             val response = when (loadType) {
+                // --- ЗАМЕНА МЕСТАМИ: APPEND и PREPEND ---
+                // БЫЛО: PREPEND -> getBefore, APPEND -> getAfter
+                // СТАЛО: PREPEND -> getAfter, APPEND -> getBefore
+
                 LoadType.REFRESH -> {
                     service.getLatest(state.config.pageSize)
                 }
 
                 LoadType.PREPEND -> {
-                    // СКРОЛЛ ВВЕРХ: нужны более старые посты → берём ключ BEFORE
-                    val remoteKeyBefore = postRemoteKeyDao.min(PostRemoteKeyEntity.KeyType.BEFORE)
-                    val key = remoteKeyBefore ?: state.pages.firstOrNull()?.firstOrNull()?.id
-                    service.getBefore(key ?: 0, state.config.pageSize)
+                    // Теперь при скролле ВВЕРХ (PREPEND) мы загружаем БОЛЕЕ НОВЫЕ посты
+                    // Для этого используем ключ AFTER
+                    val remoteKeyAfter = postRemoteKeyDao.max(PostRemoteKeyEntity.KeyType.AFTER)
+                    val key = remoteKeyAfter ?: state.pages.firstOrNull()?.firstOrNull()?.id
+                    // Используем getAfter, чтобы получить более новые посты
+                    service.getAfter(key ?: 0, state.config.pageSize)
                 }
 
                 LoadType.APPEND -> {
-                    // СКРОЛЛ ВНИЗ: нужны более новые посты → берём ключ AFTER
-                    val remoteKeyAfter = postRemoteKeyDao.max(PostRemoteKeyEntity.KeyType.AFTER)
-                    val key = remoteKeyAfter ?: state.pages.lastOrNull()?.lastOrNull()?.id
-                    service.getAfter(key ?: 0, state.config.pageSize)
+                    // Теперь при скролле ВНИЗ (APPEND) мы загружаем БОЛЕЕ СТАРЫЕ посты
+                    // Для этого используем ключ BEFORE
+                    val remoteKeyBefore = postRemoteKeyDao.min(PostRemoteKeyEntity.KeyType.BEFORE)
+                    val key = remoteKeyBefore ?: state.pages.lastOrNull()?.lastOrNull()?.id
+                    // Используем getBefore, чтобы получить более старые посты
+                    service.getBefore(key ?: 0, state.config.pageSize)
                 }
             }
 
@@ -70,7 +78,7 @@ class PostRemoteMediator(
                     when (loadType) {
                         LoadType.REFRESH -> {
                             if (body.isNotEmpty()) {
-                                // При REFRESH обновляем оба ключа
+                                // При REFRESH обновляем оба ключа (логика не меняется)
                                 postRemoteKeyDao.insertOrUpdate(
                                     PostRemoteKeyEntity(
                                         type = PostRemoteKeyEntity.KeyType.AFTER,
@@ -86,25 +94,29 @@ class PostRemoteMediator(
                             }
                         }
 
+                        // --- ЗАМЕНА МЕСТАМИ: APPEND и PREPEND ---
+                        // БЫЛО: PREPEND обновлял BEFORE, APPEND обновлял AFTER
+                        // СТАЛО: PREPEND обновляет AFTER, APPEND обновляет BEFORE
+
                         LoadType.PREPEND -> {
-                            // ПОДГРУЗКА ВВЕРХ: обновляем ключ BEFORE (это будет самый старый из новых постов)
+                            // Теперь при подгрузке ВВЕРХ (новее) обновляем ключ AFTER
                             if (body.isNotEmpty()) {
                                 postRemoteKeyDao.insertOrUpdate(
                                     PostRemoteKeyEntity(
-                                        type = PostRemoteKeyEntity.KeyType.BEFORE,
-                                        id = body.last().id, // самый старый в новой пачке
+                                        type = PostRemoteKeyEntity.KeyType.AFTER,
+                                        id = body.first().id, // самый новый в новой пачке
                                     )
                                 )
                             }
                         }
 
                         LoadType.APPEND -> {
-                            // ПОДГРУЗКА ВНИЗ: обновляем ключ AFTER (это будет самый новый из новых постов)
+                            // Теперь при подгрузке ВНИЗ (старее) обновляем ключ BEFORE
                             if (body.isNotEmpty()) {
                                 postRemoteKeyDao.insertOrUpdate(
                                     PostRemoteKeyEntity(
-                                        type = PostRemoteKeyEntity.KeyType.AFTER,
-                                        id = body.first().id, // самый новый в новой пачке
+                                        type = PostRemoteKeyEntity.KeyType.BEFORE,
+                                        id = body.last().id, // самый старый в новой пачке
                                     )
                                 )
                             }
